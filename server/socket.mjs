@@ -448,18 +448,48 @@ async function recentHistory() {
 
 /* ----------------------------------------------------------------- transport */
 
-const httpServer = createServer((req, res) => {
+const httpServer = createServer(async (req, res) => {
   // A plain HTTP probe for the platforms this is deployed to, and a quick way
   // to tell "server down" from "handshake refused" while debugging.
+  //
+  // This checks the DATABASE as well as the process — deliberately. The probe
+  // used to report only uptime and in-memory presence, so a socket server that
+  // could not reach Postgres answered 200 and looked perfectly healthy while
+  // rejecting every single connection (the handshake verifies the user against
+  // the database and fails closed). That is exactly what happened on
+  // 2026-09-16: a stale DATABASE_URL password made the realtime feature dead
+  // for however long it took someone to notice by hand, and this endpoint
+  // reported green through all of it. A health check that cannot fail is not a
+  // health check.
+  //
+  // 503 rather than a 200-with-a-flag: monitoring tools act on the status code,
+  // and a socket server with no database cannot serve anyone.
   if (req.url === "/health" || req.url === "/healthz") {
-    res.writeHead(200, {
+    const startedAt = Date.now();
+    let database = "connected";
+    let databaseMs = 0;
+    try {
+      await prisma.$queryRawUnsafe("SELECT 1");
+      databaseMs = Date.now() - startedAt;
+    } catch (err) {
+      database = "unreachable";
+      databaseMs = Date.now() - startedAt;
+      console.error(
+        "[socket] health check cannot reach the database:",
+        errText(err),
+      );
+    }
+
+    res.writeHead(database === "connected" ? 200 : 503, {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
     });
     res.end(
       JSON.stringify({
-        ok: true,
+        ok: database === "connected",
         uptimeSeconds: Math.round(process.uptime()),
+        database,
+        databaseMs,
         ...presencePayload(),
       }),
     );
