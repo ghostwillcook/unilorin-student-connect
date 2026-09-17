@@ -156,8 +156,10 @@ const MAX_CHAT_LENGTH = 2000;
 const MAX_THREAD_LENGTH = 4000;
 const RATE_WINDOW_MS = 60_000;
 const SETTINGS_TTL_MS = 5_000;
-/** Admins are never anonymised in the global room — see connection handler. */
-const STAFF_LABEL = "Student Affairs";
+/** Admins are never anonymised in the global room — see connection handler.
+ *  "Admin" rather than the office's full name, matching what the student sees
+ *  in the chat UI. The email keeps the formal name. */
+const STAFF_LABEL = "Admin";
 
 if (!process.env.DATABASE_URL) {
   console.error(
