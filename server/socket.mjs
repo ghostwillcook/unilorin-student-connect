@@ -1265,7 +1265,7 @@ async function pushToRecipients(userIds, title, body) {
     // missing/failed import must not take the socket server down.
     const webpush = (await import("web-push")).default;
     webpush.setVapidDetails(
-      process.env.VAPID_SUBJECT || "mailto:studentaffairs@unilorin.edu.ng",
+      process.env.VAPID_SUBJECT || "mailto:deanofstudentaffairs@unilorin.edu.ng",
       process.env.VAPID_PUBLIC_KEY,
       process.env.VAPID_PRIVATE_KEY,
     );
