@@ -67,6 +67,7 @@ import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
 import { PrismaClient } from "@prisma/client";
 import { decode } from "next-auth/jwt";
+import { notifyNewAdminMessage } from "../lib/notify-student.mjs";
 
 /* ------------------------------------------------------------------ env load */
 
@@ -974,7 +975,12 @@ async function handleLivechatReply(socket, payload) {
 
     const conversation = await prisma.liveConversation.findUnique({
       where: { id: conversationId },
-      select: { id: true },
+      // The student rides along because the reply notifies them, and the email
+      // needs a name and an address to address them by.
+      select: {
+        id: true,
+        user: { select: { id: true, name: true, email: true } },
+      },
     });
     if (!conversation) {
       socket.emit("chat:error", { message: "Conversation not available." });
@@ -996,6 +1002,22 @@ async function handleLivechatReply(socket, payload) {
     });
 
     io.to(`live:${conversation.id}`).emit("livechat:new", toLiveMessage(row));
+
+    // Tell the student — bell, Web Push and email. The wording and the rule
+    // live in lib/notify-student.mjs, shared with the REST twin of this write
+    // path (pages/api/admin/livechat/[id].ts) so the two cannot drift; only
+    // the transports are supplied here. Awaited, not fired and forgotten: this
+    // process stays alive, but a silent failure would leave the admin thinking
+    // the student had been told. The notifier never throws.
+    await notifyNewAdminMessage({
+      prisma,
+      userId: conversation.user.id,
+      name: conversation.user.name,
+      email: conversation.user.email,
+      push: (recipientId, title, body) =>
+        pushToRecipients([recipientId], title, body),
+      sendEmail,
+    });
   } catch (error) {
     console.error("[socket] livechat:reply failed:", errText(error));
     socket.emit("chat:error", {
@@ -1271,6 +1293,51 @@ async function pushToRecipients(userIds, title, body) {
     }
   } catch (error) {
     console.warn("[socket] web push skipped:", errText(error));
+  }
+}
+
+/**
+ * Email transport for the socket runtime.
+ *
+ * The socket server runs under plain node and cannot import lib/email.ts, so
+ * this mirrors that module's contract by hand: lazily-built Resend client,
+ * the same EMAIL_FROM fallback (Resend's sandbox sender, which in production
+ * delivers only to the account owner — loud in the logs, never thrown), and
+ * the same [student-connect:email] prefix so a failure is recognisable
+ * whichever runtime sent it.
+ *
+ * NEVER THROWS: every caller has already committed its side effects by the
+ * time it gets here, and a failed email must not become an error on top of
+ * them.
+ */
+let cachedResend = null;
+
+async function sendEmail({ to, subject, html, text }) {
+  if (!process.env.RESEND_API_KEY) {
+    return { ok: false, error: "Email is not configured (RESEND_API_KEY)." };
+  }
+  try {
+    if (!cachedResend) {
+      const { Resend } = await import("resend");
+      cachedResend = new Resend(process.env.RESEND_API_KEY);
+    }
+    const { error } = await cachedResend.emails.send({
+      from: process.env.EMAIL_FROM ||
+        "UNILORIN Student Connect <onboarding@resend.dev>",
+      to,
+      subject,
+      html,
+      text,
+    });
+    if (error) {
+      console.error("[student-connect:email] send failed:", error.message);
+      return { ok: false, error: error.message };
+    }
+    return { ok: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown email error.";
+    console.error("[student-connect:email] send threw:", message);
+    return { ok: false, error: message };
   }
 }
 
